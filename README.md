@@ -5,6 +5,7 @@ And it will test with original test data and adversarial test data.
 After training, 100 sampled images will be saved for both test input and adversarial one.
 
 [TODO] current accuracy of resnet over CIFAR10 is 86.490%, which is not lower than 94%.
+
 [TODO] train the model with adversarial input.
 
 Environment:
