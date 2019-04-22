@@ -8,21 +8,7 @@ import torchvision.models as models
 import matplotlib.pyplot as plt
 import numpy as np
 import sys, os, argparse
-import pickle
 cuda = torch.device('cuda') 
-
-count_main = 1
-
-def im_save(img, labels):
-    global count_main
-    npimg = img / 2.0 + 0.5     # unnormalize
-    print('The shape of the array is:',np.shape(npimg))
-    npimg = np.transpose(npimg, (0,2, 3, 1))
-    npimg = np.stack((np.reshape(npimg[:,:,:,0],(-1,1024)),np.reshape(npimg[:,:,:,1],(-1,1024)),np.reshape(npimg[:,:,:,2],(-1,1024))),axis = 2)
-    dict = {'labels':labels, 'data':npimg.astype(np.uint8)}
-    with open('data_batch_'+str(count_main), 'wb') as fo:
-        pickle.dump(dict, fo)
-
 
 # functions to show an image
 def imshow(img, output):
@@ -34,29 +20,6 @@ def imshow(img, output):
     #plt.show()
     plt.savefig(output + '.png')
 
-
-def cifar10_loader_2():
-    transform = transforms.Compose(
-        [transforms.RandomCrop(32, padding=4),
-         transforms.RandomHorizontalFlip(),
-         transforms.ToTensor(),
-         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    #transform = transforms.Compose([
-    #    transforms.ToTensor(),
-    #    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-
-
-    set = torchvision.datasets.CIFAR10(root='./data', train=True,
-                                       download=True, transform=transform)
-
-    loader = torch.utils.data.DataLoader(set, batch_size=10000,
-                                         shuffle=False, num_workers=0)
-
-    classes = ('plane', 'car', 'bird', 'cat',
-           'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
-    return loader
-
-
 def cifar10_loader():
     transform = transforms.Compose(
         [transforms.RandomCrop(32, padding=4),
@@ -67,15 +30,13 @@ def cifar10_loader():
     #    transforms.ToTensor(),
     #    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
 
-    trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
+    trainset = torchvision.datasets.CIFAR10(root='./data_adv', train=True,
                                         download=True, transform=transform)
-    
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=128,
                                           shuffle=True, num_workers=0)
 
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False,
+    testset = torchvision.datasets.CIFAR10(root='./data_adv', train=False,
                                        download=True, transform=transform)
-    
     testloader = torch.utils.data.DataLoader(testset, batch_size=100,
                                          shuffle=False, num_workers=0)
 
@@ -189,7 +150,7 @@ def resnet101_MNIST():
 def train(args, trainloader, testloader):
     if args.data == 'cifar10':
         if args.model == 'resnet':
-            model = models.resnet18(pretrained=False).cuda() #model = models.resnet101(pretrained=False).cuda()
+            model = models.resnet18(pretrained=True).cuda()
         elif args.model == 'linear':
             model = LinearLayer_CIFAR10().cuda()
         else:
@@ -225,8 +186,7 @@ def train(args, trainloader, testloader):
         running_loss = 0.0
         correct = 0
         total = 0
-       
-        cumulative_batch = 0
+        
         for i, data in enumerate(trainloader, 0):
             # get the inputs
             inputs, labels = data
@@ -236,7 +196,6 @@ def train(args, trainloader, testloader):
             outputs = model(inputs.cuda())
             loss = criterion(outputs, labels.cuda())
             loss.backward()
-            
             optimizer.step()
             # print statistics
             running_loss += loss.cpu().item()
@@ -246,14 +205,12 @@ def train(args, trainloader, testloader):
             print('Iter %d, step %d/%d. Loss: %.3f | Acc: %.3f (%d/%d)'
                 % (epoch, i, len(trainloader), running_loss/(i+1), 100.*float(correct)/total, correct, total), end='\r')
             sys.stdout.flush()
-
-
         print('Iter %d. Loss: %.3f | Acc: %.3f (%d/%d)'
                 % (epoch, running_loss/len(trainloader), 100.*float(correct)/total, correct, total))
         sys.stdout.flush()
         acc = test(model, testloader)
         scheduler.step(acc)
-
+        test_adversarial(model, criterion, optimizer, testloader)
         if acc > best_acc:
             best_acc = acc
             state = {
@@ -264,10 +221,8 @@ def train(args, trainloader, testloader):
             }
             torch.save(state, './ckpt_%s_%s/ckpt' %(args.data, args.model))
         running_loss, correct, total = 0.0, 0, 0
-    loader = cifar10_loader_2()
-    generate_adversarial(model, criterion, optimizer, loader)
-    #test_adversarial(model, criterion, optimizer, testloader, output=args.data + '.' + args.model, draw=True)
-    
+
+    test_adversarial(model, criterion, optimizer, testloader, output=args.data + '.' + args.model, draw=True)
     print('Finished Training')
 
 def test(model, testloader):
@@ -286,68 +241,7 @@ def test(model, testloader):
     sys.stdout.flush()
     return float(correct) / total
 
-def generate_adversarial(model, criterion, optimizer, loader, output = 'sample', draw=False):
-    global count_main
-    correct = 0
-    total = 0
-    cumulative_batch_count = 0
-    for data in loader:
-        images, labels = data
-        optimizer.zero_grad()
-        images = Variable(images.cuda(), requires_grad=True)
-        outputs = model(images)
-        loss = criterion(outputs, labels.cuda())
-        loss.backward()
-        gradient_input = images.grad.data
-
-        #print('gradient_input', gradient_input)
-        gradient_input_sign = 2 * (gradient_input > 0).float() - 1.0
-        #print('gradient_input_sign', gradient_input_sign)
-
-
-
-        if(cumulative_batch_count == 0):
-            #print('1:',cumulative_batch)
-            #print('2:',gradient_input_sign.cpu().numpy().shape)
-            cumulative_batch = gradient_input_sign.cpu().numpy()
-            cumulative_batch_labels = labels.cpu().numpy()
-            #print('1:',cumulative_batch.shape)
-            #print('2:',gradient_input_sign.cpu().numpy().shape)
-            
-
-        else:
-            #print('1:',cumulative_batch.shape)
-            #print('2:',gradient_input_sign.cpu().numpy().shape)
-            cumulative_batch = np.vstack((cumulative_batch, gradient_input_sign.cpu().numpy()))
-            cumulative_batch_labels = np.vstack((cumulative_batch_labels, labels.cpu().numpy()))
-        
-        cumulative_batch_count += labels.size(0)        
-
-        if((cumulative_batch_count % 10000)==0 and cumulative_batch_count is not 0):
-            im_save(cumulative_batch, cumulative_batch_labels)
-            gradient_input = images.grad.data
-            count_main += 1
-            
-
-
-
-        #if draw == True:
-            #imshow(images, output)
-            #imshow(images + gradient_input_sign * 0.1, output+'.adversarial')
-            #draw = False
-
-       
-
-        outputs = model(images + gradient_input_sign * 0.1)
-        _, predicted = torch.max(outputs.data, 1)
-        #global count_main
-        #count_main += 1
-        #im_save(images, labels)
-        total += labels.size(0)
-        correct += (predicted.cpu() == labels).sum().item()
-
-
-def test_adversarial(model, trainloader, testloader, output = 'sample', draw=False):
+def test_adversarial(model, criterion, optimizer, testloader, output = 'sample', draw=False):
     correct = 0
     total = 0
     for data in testloader:
@@ -358,7 +252,6 @@ def test_adversarial(model, trainloader, testloader, output = 'sample', draw=Fal
         loss = criterion(outputs, labels.cuda())
         loss.backward()
         gradient_input = images.grad.data
-   
         #print('gradient_input', gradient_input)
         gradient_input_sign = 2 * (gradient_input > 0).float() - 1.0
         #print('gradient_input_sign', gradient_input_sign)
@@ -369,9 +262,6 @@ def test_adversarial(model, trainloader, testloader, output = 'sample', draw=Fal
             draw = False
         outputs = model(images + gradient_input_sign * 0.1)
         _, predicted = torch.max(outputs.data, 1)
-        #global count_main
-        #count_main += 1
-        #im_save(images, labels)
         total += labels.size(0)
         correct += (predicted.cpu() == labels).sum().item()
 
@@ -380,7 +270,6 @@ def test_adversarial(model, trainloader, testloader, output = 'sample', draw=Fal
     sys.stdout.flush()
     return float(correct) / total
     
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='660 Project')
